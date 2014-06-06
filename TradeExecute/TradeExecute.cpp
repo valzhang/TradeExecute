@@ -25,9 +25,17 @@ const int INI_VOL = 0;
 const int FUND_SIZE = 100;
 const int HOLD_SIZE = 300;
 const int ORDER_SIZE = 300;
+const int N_TIME = 3;
 
-int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio );
+int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio, double minGap );
 
+//打印出委托请求信息
+inline void PrintOrderMsg( CIDMP_ORDER_REQ &orderReq );
+
+//获取最新交易信息
+inline bool GetRealTrade( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq );
+
+int GotoFinalStep( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio, double minGap );
 int main()
 {
 
@@ -190,20 +198,57 @@ int main()
 	if ( nSuccess < 0 ){
 		return 0;
 	}
-	nSuccess = TraderCore( trader, orderReq, 600, 3, 0.05 );
+
+
+	double minGap = 0.0;
+	if ( orderReq.exchgcode < 3 ){
+		CIDMP_STOCK_INFO *info = new CIDMP_STOCK_INFO[6000];
+		int stkinfo2 = trader.GetSysStockInfo(false,info,6000);
+		for (int i = 0; i < stkinfo2; i++){
+			if ( strcmp( info[i].symbol, orderReq.symbol ) == 0 ){
+				minGap = info[i].priceUnit;
+				break;
+			}
+		}
+		delete []info;
+	}else{
+		CIDMP_FUTRUE_INFO *ftinfo = new CIDMP_FUTRUE_INFO[3000];
+		int ftinfoSize = trader.GetSysFutrueInfo(false,ftinfo,3000);
+		for (int i = 0; i < ftinfoSize; i++){
+			if ( strcmp( ftinfo[i].symbol, orderReq.symbol ) == 0 ){
+				minGap = ftinfo[i].priceUnit;
+				break;
+			}
+		}
+		delete []ftinfo;
+	}
+	if (orderReq.direction == 1){
+		minGap = 0 - minGap;
+	}
+	nSuccess = TraderCore( trader, orderReq, 600, 3, 0.05, minGap );
+	if (nSuccess < 0){
+		printf("***交易失败，失败原因：风控检查失败！\n");
+	}else if (nSuccess == 0){
+		printf("***交易失败，失败原因：交易超时！\n");
+	}else{
+		printf("***交易成功！\n");
+	}
+	GetRealTrade( trader, orderReq );
 }
 
-int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio )
+int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio, double minGap )
 {
+
+
 	bool getTrade = false;
 	bool orderInMarket = false;
 	clock_t start_time = clock();
 	double priceInOrder = 0;
 	while ( !getTrade ){
 		clock_t cur_time = clock();
-		if ( cur_time - start_time >= maxSeconds * (1 - finalRatio) ){
+		if ( cur_time - start_time >= 1000 * maxSeconds * (1 - finalRatio) ){
 			//进入最终步骤
-			FinalStep();
+			return GotoFinalStep( trader, orderReq, maxSeconds, nTicks, finalRatio, minGap );
 			break;
 		}else{
 			//获取最新价格
@@ -221,18 +266,173 @@ int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds
 			if ( orderInMarket ){
 				if ( lastPrice != priceInOrder ){
 					//Risk
-					//OrderCancel
-
+					orderReq.orderPrice = lastPrice;
+					int riskNum = 0;
+					printf("委托信息:合约=%s,买卖=%d,开平=%d,价格=%6.3f,数量=%d\n", 
+						orderReq.symbol, orderReq.direction, orderReq.offsetFlagType, orderReq.orderPrice, orderReq.orderVol);
+					int riskSuccess = trader.RiskTest( orderReq, riskNum );
+					switch (riskSuccess){
+					case -1:
+						printf("***试算失败！失败原因——【未登录】\n");
+						break;
+					case -2:
+						printf("***试算失败！失败原因——【查询流水号失败】\n");
+						break;
+					case -3:
+						printf("***试算失败！失败原因——【风控未通过】\n");
+						break;
+					case -5:
+						printf("***试算失败！失败原因——【fundId或cellId不存在或未被授权】\n");
+						break;
+					default:
+						break;
+					}//switch
+					if ( riskNum > 0 ){
+						printf("***触发风控数目:%d\n",riskNum);
+						return -1;
+					}
+										
+					//OrderCancel撤单
+					char errorMsg[200];
+					PrintOrderMsg(orderReq);
+					
+					int cancelSuccess = trader.CancelOrder( orderReq.orderNo, errorMsg );//orderNo与batNo区别 
+					if ( cancelSuccess < 0 ){	//撤单失败的操作 todo
+						printf("***撤单失败！\n");
+						return -1;
+					}else{
+						printf("***撤单成功！\n");
+						orderInMarket = false;
+						priceInOrder = 0.0;
+					}
 				}else{
 					//获取最新交易信息Get Trade
+					getTrade = GetRealTrade( trader, orderReq );
 					continue;
 				}//if
 			}else{
 				//Risk
 			}//if
-			//OrderInsert
+			//OrderInsert下单
+			int riskNum;
+			int orderSuccess = trader.OrderInsert( orderReq, riskNum );
+			PrintOrderMsg(orderReq);
+			if ( orderSuccess < 0 ){
+				switch (orderSuccess ){
+				case -1:
+					printf("***订单委托失败！失败原因——【未登录】\n");
+					break;
+				case -2:
+					printf("***订单委托失败！失败原因——【查询流水号失败】\n");
+					break;
+				case -3:
+					printf("***订单委托失败！失败原因——【风控未通过】\n");
+					break;
+				case -4:
+					printf("***订单委托失败！失败原因——【下单失败】\n");
+					break;
+				case -5:
+					printf("***订单委托失败！失败原因——【fundId或cellId不存在或未被授权】\n");
+					break;
+				default:
+					break;
+				}
+				return -1;
+			}else{
+				printf( "***订单已委托成功！\n" );
+				orderInMarket = true;
+				priceInOrder = lastPrice;
+			}
 			//获取最新交易信息Get Trade
-
+			getTrade = GetRealTrade( trader, orderReq );
 		}//if
 	}//while
+
+	return 1;
+}
+
+inline void PrintOrderMsg( CIDMP_ORDER_REQ &orderReq )
+{			
+	printf("委托号\t资产账户\t资产单元\t投资组合\t证券/合约代码\t买卖\t开平\t价格\t数量\n");
+	printf("%d\t%d\t%d\t%I64d\t%s\t%d\t%d\t%6.3f\t%d\n\n", orderReq.orderNo, orderReq.fundId, orderReq.cellId, orderReq.proflId,
+		orderReq.symbol, orderReq.direction, orderReq.offsetFlagType, orderReq.orderPrice, orderReq.orderVol );	
+}
+
+inline bool GetRealTrade( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq )
+{
+	printf("\n***查询委托信息：\n");
+	CIDMP_ORDER_INFO orderInfo;
+	int checkSuccess = trader.GetOrder( orderReq.orderNo, orderInfo );
+	if(checkSuccess != 1) {	    
+		printf("查询委托信息失败!\n");
+	}
+	printf("委托号\t状态\t证券/合约代码\t买卖\t开平\t价格\t数量\t时间\t交易员\t错误信息\n");
+	printf("%d\t%d\t%s\t%d\t%d\t%6.3f\t%d\t%s\t%s\t%s\n",
+		orderInfo.orderNo, orderInfo.orderStatus, orderInfo.symbol, orderInfo.direction, orderInfo.offsetFlagType,
+		orderInfo.orderPrice, orderInfo.orderVol, orderInfo.orderTime, orderInfo.userId, orderInfo.errorInfo);	
+	//区分部分成交与全部成交 todo
+	return (orderInfo.orderStatus == 6);	//1未报2待报3废单4已报5部成6全成7已报撤单8部成9撤单待撤 
+
+}
+
+int GotoFinalStep( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio, double minGap )
+{
+	clock_t start_time = clock();
+	int max_time = 1000 * maxSeconds * finalRatio;
+
+	while ( clock() - start_time <= max_time ){	//没有超时
+		for ( int i  = 0; i < N_TIME; i++ ){
+			//价格增加
+			//是否需要检查价格上限？ todo
+			orderReq.orderPrice += minGap * nTicks;
+			//下单
+			int riskNum;
+			int orderSuccess = trader.OrderInsert( orderReq, riskNum );
+			PrintOrderMsg(orderReq);
+			if ( orderSuccess < 0 ){
+				switch (orderSuccess ){
+				case -1:
+					printf("***订单委托失败！失败原因——【未登录】\n");
+					break;
+				case -2:
+					printf("***订单委托失败！失败原因——【查询流水号失败】\n");
+					break;
+				case -3:
+					printf("***订单委托失败！失败原因——【风控未通过】\n");
+					break;
+				case -4:
+					printf("***订单委托失败！失败原因——【下单失败】\n");
+					break;
+				case -5:
+					printf("***订单委托失败！失败原因——【fundId或cellId不存在或未被授权】\n");
+					break;
+				default:
+					break;
+				}
+				return -1;
+			}else{
+				printf( "***订单已委托成功！\n" );
+			}
+			
+			//撤单
+			char errorMsg[200];
+			int cancelSuccess = trader.CancelOrder( orderReq.orderNo, errorMsg );//orderNo与batNo区别 
+			if ( cancelSuccess < 0 ){	//撤单失败的操作 todo
+				printf("***撤单失败！\n");
+				if ( GetRealTrade( trader, orderReq ) ){
+					printf("***交易成功！\n");
+					return 1;
+				}else{
+					return -1;
+				}
+			}else{
+				printf("***撤单成功！\n");
+			}
+			if ( GetRealTrade( trader, orderReq ) ){
+				printf("***交易成功！\n");
+				return 1;
+			}
+		}
+	}
+	return 0;
 }
