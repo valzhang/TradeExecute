@@ -30,6 +30,7 @@ const int MAX_SECONDS = 600;
 const int N_TICKS = 1;
 const double FINAL_RATIO = 0.05;
 const int MAX_INSERT_SECS = 5;	//下单最长等待时间
+const string LOG_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\log.txt";
 
 typedef struct TraderThreadParameter{
 	CIDMPTradeApi* pTrader;
@@ -45,13 +46,13 @@ DWORD WINAPI TraderCore( void *para );
 
 //打印出委托请求信息
 inline void PrintOrderMsg( CIDMP_ORDER_REQ &orderReq );
-int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo );
-inline bool UpdateOrder( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo );
-int OrderInsert( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo );
+int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE *stream );
+inline bool UpdateOrder( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE* stream );
+int OrderInsert( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE *stream );
 //获取最新交易信息
 //inline bool GetRealTrade( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, CIDMP_ORDER_INFO &orderInfo );
 
-int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTicks, double finalRatio, double minGap );
+int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTicks, double finalRatio, double minGap, FILE *stream );
 int main()
 {
 
@@ -268,6 +269,8 @@ int main()
 	thread_para.finalRatio = FINAL_RATIO;
 	thread_para.minGap = minGap;
 	thread_para.orderStatus = 0;
+	
+
 
 	HANDLE traderHandler = CreateThread( NULL, 0, TraderCore, &thread_para, 0, NULL );
 
@@ -289,6 +292,7 @@ int main()
 		break;
 	}
 	CloseHandle(TraderCore);
+
 /*	if (nSuccess < 0){
 		printf("***交易失败，失败原因：风控检查失败！\n");
 	}else if (nSuccess == 0){
@@ -304,6 +308,11 @@ int main()
 
 DWORD WINAPI TraderCore( LPVOID pParam )
 {
+	FILE *stream = NULL;
+	stream = fopen( LOG_PATH.c_str(), "w" );
+	if (stream == NULL){
+		getchar();
+	}
 	//强制转换参数
 	TraderThreadParameter *thread_para = (TraderThreadParameter *)pParam;
 	CIDMPTradeApi *pTrader = thread_para->pTrader;
@@ -331,6 +340,7 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 	realQuery->exchgcode = pOrder->exchgcode;
 	strcpy( realQuery->symbol, pOrder->symbol );
 
+
 	while (!getTrade){
 		//每3s输出一次最新价格
 		clock_t cur_time = clock();
@@ -344,7 +354,7 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 		if ( cur_time - start_time >= 1000 * maxSeconds * ( 1 - finalRatio ) ){
 			//进入最终步骤
 			printf("***Go To Final Step...\n");
-			int result = GotoFinalStep( pTrader, pOrder, maxSeconds, nTicks, finalRatio, minGap );
+			int result = GotoFinalStep( pTrader, pOrder, maxSeconds, nTicks, finalRatio, minGap, stream );
 			if ( result == 1 ){
 				printf("***程序超时...\n");
 			}else if ( result == 0 ){
@@ -361,13 +371,13 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 			}//if
 			if (orderInMarket){	//如果已有订单
 				if ( lastPrice != priceInOrder ){
-					OrderCancel( pTrader, pOrder, pInfo );
-					getTrade = UpdateOrder( pTrader, pOrder, pInfo );
+					OrderCancel( pTrader, pOrder, pInfo, stream );
+					getTrade = UpdateOrder( pTrader, pOrder, pInfo,stream );
 					if (getTrade){
 						continue;
 					}
 				}else{
-				getTrade = UpdateOrder( pTrader, pOrder, pInfo );
+				getTrade = UpdateOrder( pTrader, pOrder, pInfo,stream );
 				continue;
 				}//if
 			}else{
@@ -377,9 +387,9 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 			}//if
 			//InsertOrder
 			//更新最新的成交信息与委托订单量
-			getTrade = UpdateOrder( pTrader, pOrder, pInfo );
+			getTrade = UpdateOrder( pTrader, pOrder, pInfo, stream );
 			printf("委托信息:合约=%s,买卖=%d,开平=%d,价格=%6.3f,数量=%d\n", pOrder->symbol, pOrder->direction, pOrder->offsetFlagType, pOrder->orderPrice, pOrder->orderVol);
-			nSuccess = OrderInsert( pTrader, pOrder, pInfo );
+			nSuccess = OrderInsert( pTrader, pOrder, pInfo, stream );
 //			nSuccess = pTrader->OrderInsert( *pOrder, riskNum );
 			if ( nSuccess < 0 ){
 				printf("%s\n", pTrader->GetLastOrderInsertError());
@@ -420,10 +430,11 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 		printf("***交易成功！\n");
 		orderStatus = 2;
 	}
+	fclose( stream );
 	return 1;
 }
 
-inline bool UpdateOrder( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo )
+inline bool UpdateOrder( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE* stream )
 {
 	if (pOrder->orderNo >= 0){
 		pTrader->GetOrderByOrderNo( pOrder->orderNo, *pInfo );
@@ -431,18 +442,28 @@ inline bool UpdateOrder( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_
 	if ( pInfo->orderStatus == 8 || pInfo->orderStatus == 5){
 		pOrder->orderVol = pInfo->orderVol - pInfo->tradeVol;
 	}
+	if ( pInfo->orderStatus == 6 ){
+		time_t rawtime;
+		time(&rawtime);
+		fprintf(stream, "时间:%s 订单成交！\n委托信息:合约=%s,买卖=%d,开平=%d,价格=%6.3f,数量=%d\n", asctime(localtime((&rawtime))),pOrder->symbol, pOrder->direction, pOrder->offsetFlagType, pOrder->orderPrice, pOrder->orderVol);
+
+	}
 	return pInfo->orderStatus == 6;
 }
 
-int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo )
+int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE *stream )
 {
 	char errorMsg[200];
 	bool cancelSuccess = false;
 	while (!cancelSuccess){
 		int nSuccess = pTrader->CancelOrder( pOrder->orderNo, errorMsg );
-		UpdateOrder( pTrader, pOrder, pInfo );
+		UpdateOrder( pTrader, pOrder, pInfo, stream );
 		if ( nSuccess >0 ){
 			printf("***撤单成功！...\n");
+			time_t rawtime;
+			time(&rawtime);
+			fprintf(stream, "时间:%s 订单撤销成功！\n委托信息:合约=%s,买卖=%d,开平=%d,价格=%6.3f,数量=%d\n", asctime(localtime((&rawtime))),pOrder->symbol, pOrder->direction, pOrder->offsetFlagType, pOrder->orderPrice, pOrder->orderVol);
+
 			cancelSuccess = true;
 			return 0;
 		}
@@ -454,7 +475,7 @@ int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_IN
 	}
 
 }
-int OrderInsert( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo )
+int OrderInsert( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE* stream )
 {
 	bool missionFailed = false;
 	int riskNum = 0;
@@ -490,7 +511,7 @@ int OrderInsert( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_IN
 		}
 		clock_t start_time = clock();
 		while (true){
-			UpdateOrder( pTrader, pOrder, pInfo );
+			UpdateOrder( pTrader, pOrder, pInfo,stream );
 			if ( pInfo->orderStatus > 3 ){
 				break;
 			}
@@ -505,10 +526,14 @@ int OrderInsert( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_IN
 		return 0;
 	}else{
 		printf( "***订单已委托成功！最新价格=%f\n", pOrder->orderPrice );
+		time_t rawtime;
+		time(&rawtime);
+
+		fprintf(stream, "时间:%s 订单委托成功！\n委托信息:合约=%s,买卖=%d,开平=%d,价格=%6.3f,数量=%d\n", asctime(localtime((&rawtime))),pOrder->symbol, pOrder->direction, pOrder->offsetFlagType, pOrder->orderPrice, pOrder->orderVol);
 	}
 	return 1;
 }
-int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTicks, double finalRatio, double minGap )
+int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTicks, double finalRatio, double minGap, FILE *stream )
 {
 	clock_t start_time = clock();
 	CIDMP_ORDER_INFO info;
@@ -516,28 +541,28 @@ int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSecon
 	bool getTrade = false;
 	//若现在市场上有单，则撤单
 	if ( info.orderVol > info.tradeVol + info.canceledVol ){
-		OrderCancel( pTrader, pOrder, &info );
+		OrderCancel( pTrader, pOrder, &info, stream );
 	}
 	while ( (clock() - start_time < maxSeconds * finalRatio * 1000) && !getTrade ){
 		//设置订单价格
 		pOrder->orderPrice += minGap;
 		for ( int i = 0; i < nTicks; i++ ){
 			//下单
-			if (OrderInsert( pTrader, pOrder, &info ) == 0){
+			if (OrderInsert( pTrader, pOrder, &info, stream ) == 0){
 				return 0;
 			}
 
 			//sleep
 			//Sleep(100);
 			while (true){
-				UpdateOrder( pTrader, pOrder, &info );
+				UpdateOrder( pTrader, pOrder, &info, stream );
 				if ( info.orderStatus == 4 ){
 					break;
 				}
 			}
 			//撤单
-			OrderCancel( pTrader, pOrder, &info );
-			getTrade = UpdateOrder( pTrader, pOrder, &info );
+			OrderCancel( pTrader, pOrder, &info, stream );
+			getTrade = UpdateOrder( pTrader, pOrder, &info, stream );
 			if (getTrade){
 				break;
 			}
