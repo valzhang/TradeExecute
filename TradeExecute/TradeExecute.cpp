@@ -14,13 +14,13 @@ const char USER_PASSWORD[20] = "1";
 const int FUND_ID = 100;	//资产账户编码
 const int CELL_ID = 1001;	//资产单元编码
 const i64 PROFL_ID = 111;	//资产组合编码
-const int DIRECTION = 1;	//交易方向
+const int DIRECTION = 0;	//交易方向
 const int EXCHANGE = 6;	//交易所编号
-const int OFFSET = 1;		//开平方向
+const int OFFSET = 0;		//开平方向
 const int PJ = 0;			//是否平今
 const char SYMBOL[8] = "IF1409";	//股票或期货代码
 const int INI_PRICE = 0;
-const int INI_VOL = 1;
+const int INI_VOL = 5;
 
 const int FUND_SIZE = 100;
 const int HOLD_SIZE = 300;
