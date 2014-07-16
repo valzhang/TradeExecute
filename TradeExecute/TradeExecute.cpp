@@ -1,26 +1,31 @@
 #include "IDMPTradeApi.h"
 #include <iomanip>
 #include <iostream>
-#include <windows.h>
+#include <fstream>
+//#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <hash_map>
+#include <string>
+#include <list>
+#include <afxmt.h>
 
 const char SERVER_IP[16] = "196.168.0.163";
 const int SERVER_PORT = 8080;
-const char USER_NAME[20] = "Admin";
-const char USER_PASSWORD[20] = "1";
+const char USER_NAME[20] = "8111";
+const char USER_PASSWORD[20] = "111111";
 
 const int FUND_ID = 100;	//资产账户编码
 const int CELL_ID = 1001;	//资产单元编码
-const i64 PROFL_ID = 111;	//资产组合编码
+const i64 PROFL_ID = 10011;	//资产组合编码
 const int DIRECTION = 0;	//交易方向
 const int EXCHANGE = 6;	//交易所编号
-const int OFFSET = 0;		//开平方向
+const int OFFSET = 1;		//开平方向
 const int PJ = 0;			//是否平今
 const char SYMBOL[8] = "IF1409";	//股票或期货代码
 const int INI_PRICE = 0;
-const int INI_VOL = 5;
+const int INI_VOL = 4;
 
 const int FUND_SIZE = 100;
 const int HOLD_SIZE = 300;
@@ -33,10 +38,13 @@ const int MAX_INSERT_SECS = 5;	//下单最长等待时间
 const string LOG_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\log.txt";
 const string TRANS_LOG_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\transaction_log.txt";
 const string ACTION_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\action_log.txt";
-const bool DEBUG = false;
+const string SYMBOL_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\symbol.txt";
+//const bool DEBUG = false;
+const bool PROCED_DEBUG = false;
 const bool INSERT_DEBUG = true;
 const bool CANCEL_DEBUG = true;
 const int UPDATE_WAIT_MILSECS = 100;		//行情更新间隔毫秒数
+
 
 //全局变量
 int global_trade_vol = 0;		//累计已交易量
@@ -44,20 +52,55 @@ double global_trade_mount = 0;		//累计已交易金额
 int global_order_vol = 0;		//订单中还未成交量
 double global_last_price = 0.0;		//最新价
 int global_last_order_no = 0;
+typedef hash_map <string, pair<double, double> > HashMapPriceData;
+HashMapPriceData global_symbol_price;		//最新的价格
+vector<string> global_symbol;				//所有Symbol
+list<int> global_order_NO;				//所有的orderNo
+typedef hash_map <int, int> HashMapVolData;
+HashMapVolData global_volumn;
+CRITICAL_SECTION global_cs;				//进程锁
+bool global_price_ready;
+bool global_vol_ready;
+bool global_trade_ready;
+//typedef hash_map <string, pair<CEvent, CEvent> > HashMapEventData;
+//HashMapEventData global_event;
+CEvent PriceChangeEvent(FALSE, FALSE, NULL, NULL);
+CEvent TradeCommandEvent(FALSE, FALSE, NULL, NULL);
+CEvent TradeReadyEvent(FALSE, FALSE, NULL, NULL);
+char price_change_symbol[8];
+int price_change_direction;
+CRITICAL_SECTION PriceChangeCriticalSection;
+CRITICAL_SECTION CommandCriticalSection;	//指令进程锁
+typedef struct TraderCommand{
+	int fund_id;
+	int cell_id;
+	int profl_id;
+	int exchange_code;
+	char symbol[8];
+	int direction;
+	int offset_flag_type;
+	int order_volumn;
+	int pj;
+	int max_seconds;
+} TraderCommand;
+TraderCommand trader_command;
+
 
 typedef struct TraderThreadParameter{
 	CIDMPTradeApi* pTrader;
 	CIDMP_ORDER_REQ* orderReq;
 	int maxSecs;
-	int nTicks;
+	int nTime;
 	double finalRatio;
 	double minGap;
 	int orderStatus;
 } TraderThreadParameter;
 
+
 DWORD WINAPI TraderCore( void *para );
-DWORD WINAPI UpdateOrderVol( LPVOID *pParam );
-DWORD WINAPI UpdatePrice( LPVOID *pParam );
+DWORD WINAPI TraderThread( void *para );
+DWORD WINAPI UpdateOrderVol( void *para );
+DWORD WINAPI UpdatePrice( void *para );
 //打印出委托请求信息
 inline void PrintOrderMsg( CIDMP_ORDER_REQ &orderReq );
 int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE *stream, int action_no );
@@ -67,7 +110,7 @@ inline void PrintLogMessage( CIDMPTradeApi *pTader, CIDMP_ORDER_REQ *pOrder, CID
 //获取最新交易信息
 //inline bool GetRealTrade( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, CIDMP_ORDER_INFO &orderInfo );
 inline void GetCharStatus( int sta, char* data );
-int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTicks, double finalRatio, double minGap, FILE *stream, int action_no );
+int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTime, double finalRatio, double minGap, FILE *stream, int action_no );
 int main()
 {
 
@@ -115,7 +158,7 @@ int main()
 		printf("获取资产单元列表失败\n");
 		getchar();
 		return 0;
-	}	
+	}	 
 	printf("[序号]\t代码\t名称\n");
 	for(int i = 0;i < cellSize; i++)
 	{
@@ -214,7 +257,7 @@ int main()
 			i+1, holdInfo2[i].symbol, holdInfo2[i].exchgcode, holdInfo2[i].holdType, holdInfo2[i].available, holdInfo2[i].total,
 			holdInfo2[i].available_jr, holdInfo2[i].available_zr);
 	}
-	
+#if 0
 	//创建订单对象
 	CIDMP_ORDER_REQ orderReq;
 	orderReq.fundId = FUND_ID;
@@ -228,7 +271,130 @@ int main()
 	orderReq.orderPrice = INI_PRICE;
 	orderReq.orderVol = INI_VOL;
 	int riskNum;
-	
+#endif
+	//预处理过程
+	//读取SymbolList
+	printf("***读取Symbol List...\n");
+	ifstream in;
+	in.open(SYMBOL_PATH);
+	if (!in){
+		printf("***Symbol List 读取失败！\n");
+		return -1;
+	}
+	string tmp;
+	while (getline(in, tmp))
+	{
+		
+		if (tmp.length() > 3){
+			global_symbol.push_back(tmp);
+			global_symbol_price[tmp] = make_pair(0, 0);
+			//global_event[tmp].first = CEvent(FALSE, FALSE, NULL, NULL);
+			//global_event[tmp].second = CEvent(FALSE, FALSE, NULL, NULL);
+		}
+	}
+	CIDMP_STOCK_INFO *info = new CIDMP_STOCK_INFO[6000];
+	int stkinfo2 = trader.GetSysStockInfo(false,info,6000);
+	CIDMP_FUTRUE_INFO *ftinfo = new CIDMP_FUTRUE_INFO[3000];
+	int ftinfoSize = trader.GetSysFutrueInfo(false,ftinfo,3000);
+
+	//初始化临界区
+	InitializeCriticalSection(&CommandCriticalSection);
+	InitializeCriticalSection(&PriceChangeCriticalSection);
+	InitializeCriticalSection(&global_cs);
+	global_price_ready = false;
+	global_vol_ready = false;
+	global_trade_ready = false;
+	HANDLE priceHandler = CreateThread( NULL, 0, UpdatePrice, NULL, 0, NULL );
+	HANDLE volumeHandler = CreateThread( NULL, 0, UpdateOrderVol, NULL, 0, NULL );
+	printf("***等待其他进程准备就绪...\n");
+	while(!global_vol_ready || !global_price_ready){
+		Sleep(500);
+	}
+//	printf("***所有进程准备就绪！\n");
+
+	 TradeCommandEvent.ResetEvent();
+		
+		//开始启动第一个交易进程
+		HANDLE traderHandler = CreateThread(NULL, 0, TraderThread, NULL, 0, NULL);
+		
+		//等待交易进程准备就绪信息
+		//printf("***Wait For Trade Ready Signal...\n");
+		printf("***等待交易线程准备就绪信号\n");
+		TradeReadyEvent.ResetEvent();
+		WaitForSingleObject(TradeReadyEvent, INFINITE);
+		//printf("***Get Trade Ready Signal...\n");
+		printf("***接收交易线程准备就绪信号\n");
+		TradeReadyEvent.ResetEvent();
+	//	printf("***Trade Thread Get Ready!\n");
+		while(true){
+			printf("***输入Y/y继续下一个交易指令，输入其他结束程序运行...\n");
+			char flag;
+			scanf("%c", &flag);
+			if ( flag != 'Y' && flag != 'y' ){
+				break;
+			}
+			printf("***请输出交易指令：(交易所代码 代码 买卖方向 开平方向 交易数量 是否平今 交易时间/secs)\n");
+			getchar();
+
+			//debug
+			//	scanf( "%d%s%d%d%d%d%d", &exchange, &symbol, &direction, &offset, &volumn, &pj, &trade_secs );
+			EnterCriticalSection(&CommandCriticalSection);
+			trader_command.fund_id = FUND_ID; trader_command.cell_id = CELL_ID; trader_command.profl_id = PROFL_ID;
+			trader_command.exchange_code = 6; strcpy(trader_command.symbol, "IF1409"); trader_command.direction = 0; trader_command.offset_flag_type = 0; trader_command.order_volumn = 1; trader_command.pj = 0; trader_command.max_seconds = 600;
+			LeaveCriticalSection(&CommandCriticalSection);
+			//发送交易指令
+			printf("***发送交易指令信号\n");
+			TradeCommandEvent.SetEvent();
+			CreateThread(NULL, 0, TraderThread, NULL, 0, NULL);
+			printf("***等待交易线程准备就绪信号\n");
+			WaitForSingleObject(TradeReadyEvent, INFINITE);
+			TradeReadyEvent.ResetEvent();
+		}
+#if 0
+		CIDMP_ORDER_REQ order;
+		order.fundId = FUND_ID;
+		order.cellId = CELL_ID;
+		order.proflId = PROFL_ID;
+		order.exchgcode = exchange;
+		strcpy(order.symbol, symbol);
+		order.direction = direction;
+		order.offsetFlagType = offset;
+		order.orderPrice = 0;
+		order.orderVol = volumn;
+		order.pj = pj;
+		TraderThreadParameter trader_para;
+		trader_para.pTrader = &trader;
+		trader_para.orderReq = &order;
+		trader_para.maxSecs = trade_secs;
+		trader_para.nTime = N_TIME;
+		int minGap = 0;
+		if (exchange < 3){
+			for (int i = 0; i < stkinfo2; i++){
+				if ( strcmp( info[i].symbol, orderReq.symbol ) == 0 ){
+					minGap = info[i].priceUnit;
+					break;
+				}
+			}
+		}else{
+			for (int i = 0; i < ftinfoSize; i++){
+				if ( strcmp( ftinfo[i].symbol, orderReq.symbol ) == 0 ){
+					minGap = ftinfo[i].priceUnit;
+					break;
+				}
+			}
+		}
+		if (direction == 1){
+			minGap = 0 - minGap;
+		}
+		trader_para.minGap = minGap;
+		trader_para.finalRatio = FINAL_RATIO;
+
+		HANDLE traderHandler = CreateThread( NULL, 0, TraderThread, &trader_para, 0, NULL );
+#endif
+
+	delete []ftinfo;
+	delete []info;
+#if 0 
 	printf("是否开始下单？(确认请输入Y/y回车，输入其他返回\n)");
 	char start_order = 0;
 	scanf("%c", &start_order);
@@ -248,31 +414,7 @@ int main()
 	}
 
 
-	double minGap = 0.0;
-	if ( orderReq.exchgcode < 3 ){
-		CIDMP_STOCK_INFO *info = new CIDMP_STOCK_INFO[6000];
-		int stkinfo2 = trader.GetSysStockInfo(false,info,6000);
-		for (int i = 0; i < stkinfo2; i++){
-			if ( strcmp( info[i].symbol, orderReq.symbol ) == 0 ){
-				minGap = info[i].priceUnit;
-				break;
-			}
-		}
-		delete []info;
-	}else{
-		CIDMP_FUTRUE_INFO *ftinfo = new CIDMP_FUTRUE_INFO[3000];
-		int ftinfoSize = trader.GetSysFutrueInfo(false,ftinfo,3000);
-		for (int i = 0; i < ftinfoSize; i++){
-			if ( strcmp( ftinfo[i].symbol, orderReq.symbol ) == 0 ){
-				minGap = ftinfo[i].priceUnit;
-				break;
-			}
-		}
-		delete []ftinfo;
-	}
-	if (orderReq.direction == 1){
-		minGap = 0 - minGap;
-	}
+
 
 	TraderThreadParameter thread_para;
 	thread_para.pTrader = &trader;
@@ -280,7 +422,7 @@ int main()
 	//*(thread_para.pTrader) = trader;
 	//*(thread_para.orderReq) = orderReq;
 	thread_para.maxSecs = MAX_SECONDS;
-	thread_para.nTicks = N_TICKS;
+	thread_para.nTime = N_TIME;
 	thread_para.finalRatio = FINAL_RATIO;
 	thread_para.minGap = minGap;
 	thread_para.orderStatus = 0;
@@ -318,10 +460,228 @@ int main()
 	CIDMP_ORDER_INFO orderInfo;*/
 //	GetRealTrade( trader, orderReq, orderInfo );
 //	printf("***任意输入结束本次下单……\n");
-  system("PAUSE");
+#endif 
+	system("PAUSE");
 	return 0;
 }
+DWORD WINAPI TraderThread( void *para )
+{
+	printf("***%d\tTrader Thread Begin...\n", GetCurrentThreadId());
+	//登陆服务器
+	char* serverIP = new char[16];
+	strcpy(serverIP, SERVER_IP);
+	int serverPort = SERVER_PORT;
+	char* userID = new char[10];
+	strcpy(userID, USER_NAME);
+	char* userPW = new char[10];
+	strcpy(userPW, USER_PASSWORD);
+	CIDMPTradeApi trader;
+	CIDMP_ORDER_INFO info;
+	int nSuccess = trader.Connect(serverIP, serverPort, userID, userPW, 0);
+	if (nSuccess != 1){
+		printf("***%d\tTrader Thread Login Failed!\n", GetCurrentThreadId());
+		getchar();
+		return -1;
+	}
+	printf("***%d\tTrader Thread Login Done...\n", GetCurrentThreadId());
+	printf("***%d\t发送线程准备就绪信号...\n", GetCurrentThreadId());
+	TradeReadyEvent.SetEvent();
+	
+	//等待交易信号
+	printf("***%d\t等待交易指令信号\n", GetCurrentThreadId());
+	WaitForSingleObject(TradeCommandEvent, INFINITE);
+	printf("***%d\t接收交易指令信号\n", GetCurrentThreadId());
+	TradeCommandEvent.ResetEvent();
+	
+	//进入临界区，获取交易指令
+	EnterCriticalSection(&CommandCriticalSection);
+	CIDMP_ORDER_REQ orderReq;
+	orderReq.fundId = trader_command.fund_id;
+	orderReq.cellId = trader_command.cell_id;
+	orderReq.proflId = trader_command.profl_id;
+	orderReq.exchgcode = trader_command.exchange_code;
+	strcpy(orderReq.symbol, trader_command.symbol);
+	orderReq.direction = trader_command.direction;
+	orderReq.offsetFlagType = trader_command.offset_flag_type;
+	orderReq.orderVol = trader_command.order_volumn;
+	orderReq.pj = trader_command.pj;
+	int maxSecs = trader_command.max_seconds;
+	LeaveCriticalSection(&CommandCriticalSection);
 
+	//获取最新交易价格
+	orderReq.orderPrice = orderReq.direction == 0 ? global_symbol_price[orderReq.symbol].first : global_symbol_price[orderReq.symbol].second;
+	printf("***%d\t开始交易...\n", GetCurrentThreadId());
+	//下单
+	int riskNum;
+	nSuccess = trader.OrderInsert(orderReq, riskNum);
+	if (nSuccess < 0){
+		printf("***%d\t下单失败！\n", GetCurrentThreadId());
+		printf("***%s\n", trader.GetLastOrderInsertError());
+		return -1;
+	}
+	//确认下单成功
+	trader.GetOrderByOrderNo(orderReq.orderNo, info);
+	while ( info.orderStatus < 3 ){
+		Sleep(100);
+		trader.GetOrderByOrderNo(orderReq.orderNo, info);
+	}
+	if (info.orderStatus == 3){
+		printf("***%d\t下单失败！\n", GetCurrentThreadId());
+		printf("***%s\n", trader.GetLastOrderInsertError());
+		return -1;
+	}
+	printf("***%d\t下单成功！下单价格 = %3.7f\n", GetCurrentThreadId(), orderReq.orderPrice);
+	global_order_NO.push_back(orderReq.orderNo);
+	global_volumn[orderReq.orderNo] = orderReq.orderVol;
+
+	//开始交易循环
+//	CEvent& priceEvent = orderReq.direction == 0 ? global_event[orderReq.symbol].first : global_event[orderReq.symbol].second;
+	clock_t start_time = clock();
+	bool getTrade = false;
+	while (clock() - start_time <= maxSecs * 1000){
+		if (WaitForSingleObject(PriceChangeEvent, 3000) == WAIT_TIMEOUT ){
+			printf("Heart Beat...%d\n", clock());
+			//trader.GetOrderByOrderNo(orderReq.orderNo, info);
+			if (global_volumn[orderReq.orderNo] == 0){
+				printf("***%d\t订单成交!\n", GetCurrentThreadId());
+				getTrade = true;
+				break;
+			}
+			continue;
+		}else{
+			if (global_volumn[orderReq.orderNo] == 0){
+				printf("***%d\t订单成交!\n", GetCurrentThreadId());
+				getTrade = true;
+				break;
+			}
+			printf("***%d\t接收价格变化信号\n", GetCurrentThreadId());
+			PriceChangeEvent.ResetEvent();
+			//确认价格变化是否与本订单相关
+			EnterCriticalSection(&PriceChangeCriticalSection);
+			if ( strcmp(price_change_symbol, orderReq.symbol) != 0 || price_change_direction != orderReq.direction ){
+				printf("***%d\t价格变化与本订单无关，继续等待\n", GetCurrentThreadId());
+				continue;
+			}
+			LeaveCriticalSection(&PriceChangeCriticalSection);
+			
+			//撤单
+			char errorMsg[200];
+			trader.CancelOrder(orderReq.orderNo, errorMsg);
+			//确认撤单成功
+			trader.GetOrderByOrderNo(orderReq.orderNo, info);
+			while (info.orderStatus < 8){
+				Sleep(100);
+				trader.GetOrderByOrderNo(orderReq.orderNo, info);
+			}
+			printf("***%d\t订单号 = %d, 撤单成功！\n", GetCurrentThreadId(), orderReq.orderNo);
+			//更新价格
+			orderReq.orderPrice = orderReq.direction == 0 ? global_symbol_price[orderReq.symbol].first : global_symbol_price[orderReq.symbol].second;
+			printf("***%d\t订单价格变化，最新价格 = %3.7f\n", GetCurrentThreadId(), orderReq.orderPrice);
+
+			//下单
+			int riskNum;
+			int nSuccess = trader.OrderInsert(orderReq, riskNum);
+			if (nSuccess < 0){
+				printf("***%d\t下单失败！\n", GetCurrentThreadId());
+				printf("***%s\n", trader.GetLastOrderInsertError());
+				return -1;
+			}
+			//确认下单成功
+			trader.GetOrderByOrderNo(orderReq.orderNo, info);
+			while ( info.orderStatus < 3 ){
+				Sleep(100);
+				trader.GetOrderByOrderNo(orderReq.orderNo, info);
+			}
+			if (info.orderStatus == 3){
+				printf("***%d\t下单失败！\n", GetCurrentThreadId());
+				printf("***%s\n", trader.GetLastOrderInsertError());
+				return -1;
+			}
+			printf("***%d\t下单成功！下单价格 = %3.7f\n", GetCurrentThreadId(), orderReq.orderPrice);
+			global_order_NO.push_back(orderReq.orderNo);
+			global_volumn[orderReq.orderNo] = orderReq.orderVol;
+		}
+
+
+	}
+	if (!getTrade){
+		printf("***%d\t订单超时...\n", GetCurrentThreadId());
+	}
+	printf("***%d\tTrader Thread End...\n", GetCurrentThreadId());
+	return 0;
+}
+#if 0
+DWORD WINAPI TraderThread( void *para )
+{
+	printf("***Start Trader Thread...\n");
+	FILE *stream = NULL;
+	stream = fopen( LOG_PATH.c_str(), "w" );
+
+	if (stream == NULL){
+		getchar();
+	}
+	//fprintf( stream, "时间\t本地编号\t订单编号\t状态\t总量\t成交量\t委托量\t撤单量\t价格\n" );
+	FILE *action_stream;
+	action_stream = fopen( ACTION_PATH.c_str(), "r" );
+	int no = 0;
+	int action_no;
+	while (fscanf( action_stream, "%d", &no ) != EOF){
+		action_no = no;
+	}
+	action_no++;
+	fclose(action_stream);
+
+	//强制转换参数
+	CIDMP_ORDER_INFO info;
+	TraderThreadParameter *thread_para = (TraderThreadParameter *)para;
+	CIDMPTradeApi *pTrader = thread_para->pTrader;
+	CIDMP_ORDER_REQ *pOrder = thread_para->orderReq;
+	pOrder->orderNo = -1;
+	int maxSeconds = thread_para->maxSecs;
+	int nTime = thread_para->nTime;
+	double finalRatio = thread_para->finalRatio;
+	double minGap = thread_para->minGap;
+	//设置订单价格
+	if (pOrder->direction == 0){
+		pOrder->orderPrice = global_symbol_price[pOrder->symbol].first;
+	}else{
+		pOrder->orderPrice = global_symbol_price[pOrder->symbol].second;
+	}
+
+	int riskNum = 0;
+	
+	printf("委托信息:合约=%s,买卖=%d,开平=%d,价格=%6.3f,数量=%d\n", pOrder->symbol, pOrder->direction, pOrder->offsetFlagType, pOrder->orderPrice, pOrder->orderVol);
+
+	//提交订单委托
+	OrderInsert(pTrader, pOrder, &info, stream, action_no);
+	global_order_NO.push_back(pOrder->orderNo);
+	clock_t start_time = clock();
+	while ( clock() - start_time < maxSeconds * 1000 ){
+		//等待信号触发
+		printf("***Wait Signal...\n");
+		DWORD nSuccess = WaitForSingleObject(pOrder->direction == 0 ? global_event[pOrder->symbol].first : global_event[pOrder->symbol].second, 3000);
+		if (nSuccess == WAIT_TIMEOUT){
+			//输出最新价格信息
+			printf("***Heart Beat...%3.7f\n", pOrder->direction == 0 ? global_symbol_price[pOrder->symbol].first : global_symbol_price[pOrder->symbol].second);
+		}else{
+			OrderCancel(pTrader, pOrder, &info, stream, action_no);
+			pOrder->orderVol = global_volumn[pOrder->orderNo];
+			if (pOrder->orderVol == 0){
+				break;
+			}
+			if (pOrder->direction == 0){
+				pOrder->orderPrice = global_symbol_price[pOrder->symbol].first;
+			}else{
+				pOrder->orderPrice = global_symbol_price[pOrder->symbol].second;
+			}
+			
+			OrderInsert(pTrader, pOrder, &info, stream, action_no);
+			global_order_NO.push_back(pOrder->orderNo);
+		}
+	}
+	return 0;
+}
+#endif
 DWORD WINAPI TraderCore( LPVOID pParam )
 {
 	FILE *stream = NULL;
@@ -346,10 +706,11 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 	CIDMP_ORDER_REQ *pOrder = thread_para->orderReq;
 	pOrder->orderNo = -1;
 	int maxSeconds = thread_para->maxSecs;
-	int nTicks = thread_para->nTicks;
+	int nTime = thread_para->nTime;
 	double finalRatio = thread_para->finalRatio;
 	double minGap = thread_para->minGap;
 	int orderStatus = thread_para->orderStatus;
+	
 
 	//初始状态变量
 	bool getTrade = false;
@@ -392,11 +753,16 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 		if ( cur_time - start_time >= 1000 * maxSeconds * ( 1 - finalRatio ) ){
 			//进入最终步骤
 			printf("***Go To Final Step...\n");
-			int result = GotoFinalStep( pTrader, pOrder, maxSeconds, nTicks, finalRatio, minGap, stream, action_no );
+			int result = GotoFinalStep( pTrader, pOrder, maxSeconds, nTime, finalRatio, minGap, stream, action_no );
 			if ( result == 1 ){
 				printf("***程序超时...\n");
+				thread_para->orderStatus = 1;
 			}else if ( result == 0 ){
+				thread_para->orderStatus = 2;
 				printf("***交易成功...\n");
+			}else{
+				printf("***交易失败...\n");
+				thread_para->orderStatus = -1;
 			}
 			break;
 		}else{
@@ -482,7 +848,7 @@ DWORD WINAPI TraderCore( LPVOID pParam )
 inline bool UpdateOrder( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE* stream, int action_no )
 {
 	//debug
-	if (DEBUG){
+	if (PROCED_DEBUG){
 		printf("UpdataOrder\n");
 	}
 	
@@ -527,7 +893,7 @@ inline bool UpdateOrder( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_
 			fclose(trans_stream);
 		}
 	}
-	if (DEBUG){
+	if (PROCED_DEBUG){
 		printf("End UpdataOrder\n");
 	}
 	
@@ -570,7 +936,7 @@ int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_IN
 		fprintf( stream, "时间 = %s本地编号 = %d，服务器编号 = %d，指令状态 = %s，指令返回 = %d，服务器状态 = %s，买卖方向 = %d，开平方向 = %d，总量 = %d，成交量 = %d，委托量 = %d，撤单量 = %d，价格= %6.3f\n", 
 			asctime(localtime(&rawtime)), action_no, pOrder->orderNo, "Cancel Return", nSuccess, status, pOrder->direction, pOrder->offsetFlagType, pInfo->orderVol, pInfo->tradeVol, (pInfo->orderVol - pInfo->tradeVol - pInfo->canceledVol), pInfo->canceledVol, pInfo->orderPrice );
 		delete []status;
-		if ( pInfo->orderStatus == 7 ){
+		if ( pInfo->orderStatus >= 7 ){
 			printf("***撤单成功！...\n");
 			UpdateOrder( pTrader, pOrder, pInfo, stream, action_no );
 		//	time_t rawtime;
@@ -687,7 +1053,7 @@ int OrderInsert( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_IN
 inline void GetCharStatus( int sta, char* data )
 {
 	//debug
-	if (DEBUG){
+	if (PROCED_DEBUG){
 		printf("GetCharStatus\n");
 	}
 
@@ -732,11 +1098,11 @@ inline void GetCharStatus( int sta, char* data )
 		strcpy( data, "初始状态\0" );
 		break;
 	}
-	if (DEBUG){
+	if (PROCED_DEBUG){
 		printf("End GetCharStatus\n");
 	}
 }
-int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTicks, double finalRatio, double minGap, FILE *stream, int action_no )
+int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSeconds, int nTime, double finalRatio, double minGap, FILE *stream, int action_no )
 {
 	clock_t start_time = clock();
 	CIDMP_ORDER_INFO info;
@@ -749,17 +1115,20 @@ int GotoFinalStep( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, int maxSecon
 	while ( (clock() - start_time < maxSeconds * finalRatio * 1000) && !getTrade ){
 		//设置订单价格
 		pOrder->orderPrice += minGap;
-		for ( int i = 0; i < nTicks; i++ ){
+		for ( int i = 0; i < nTime; i++ ){
 			//下单
-			if (OrderInsert( pTrader, pOrder, &info, stream, action_no ) == 0){
+			int nSuccess = OrderInsert( pTrader, pOrder, &info, stream, action_no );
+			if ( nSuccess == 0){
 				return 0;
+			}else if ( nSuccess < 0 ){
+				return -1;
 			}
 
 			//sleep
 			//Sleep(100);
 			while (true){
 				UpdateOrder( pTrader, pOrder, &info, stream, action_no );
-				if ( info.orderStatus == 4 ){
+				if ( info.orderStatus >= 4 ){
 					break;
 				}
 			}
@@ -789,30 +1158,128 @@ inline void PrintLogMessage( CIDMPTradeApi *pTader, CIDMP_ORDER_REQ *pOrder, CID
 	fprintf( stream, "%s\t%d\t\t%d\t\t%s\t%d\t%d\t%d\t%d\t%6.3f\n", asctime(localtime(&rawtime)), actNo, pOrder->orderNo, (insert?("下单"):("撤单")), pInfo->orderVol, 
 		pInfo->tradeVol, (pInfo->orderVol - pInfo->tradeVol - pInfo->canceledVol), pInfo->canceledVol, pInfo->orderPrice);
 }
-/*
-DWORD WINAPI UpdateOrderVol( LPVOID* pParam )
+
+DWORD WINAPI UpdateOrderVol( void *para )
 {
+	printf("***Start Update Order Volumn Thread...\n");
+	//登陆服务器
 	char* serverIP = new char[16];
 	strcpy(serverIP, SERVER_IP);
 	int serverPort = SERVER_PORT;
-	CIDMP_ORDER_INFO info;
+	char* userID = new char[10];
+	strcpy(userID, USER_NAME);
+	char* userPW = new char[10];
+	strcpy(userPW, USER_PASSWORD);
 	CIDMPTradeApi trader;
-	int nSuccess = trader.Connect()
+	CIDMP_ORDER_INFO info;
+	int nSuccess = trader.Connect(serverIP, serverPort, userID, userPW, 0);
+	if (nSuccess != 1){
+		printf("***Update Volumn Thread Login Failed!\n");
+		getchar();
+		return -1;
+	}
+	global_vol_ready = true;
+	printf("***Update Order Volumn Thread Ready...\n");
 	while (true)
 	{
-		trader.GetOrderByOrderNo( global_last_order_no, info );
-		global_order_vol = info.orderVol - info.tradeVol;
+//		printf("***Check Order Volumn...\n");
+//		printf("%d", global_order_NO.size());
+		if (global_order_NO.size() == 0){
+			continue;
+		}
+	//	printf("%d\t", global_order_NO.size());
+		for ( list<int>::iterator it = global_order_NO.begin(); it != global_order_NO.end();  ){
+			
+			int order_no = *it;
+			trader.GetOrderByOrderNo( order_no, info );
+			if ( info.orderStatus == 3 || info.orderStatus > 5 ){
+				//删除此orderNo信息
+				global_order_NO.erase(it++);
+				global_volumn.erase(order_no);
+			}else{
+				it++;
+				global_volumn[order_no] = info.orderVol - info.tradeVol;
+	//			printf("%d\t", global_volumn[order_no]);
+			}
+		}
+
 		Sleep(UPDATE_WAIT_MILSECS);
 	}
+	printf("***Stop Update Order Volumn Thread...\n");
 	return 0;
 }
 
-DWORD WINAPI UpdatePrice( LPVOID *pParam )
+DWORD WINAPI UpdatePrice( void *para )
 {
+	printf("***Start Update Price Thread...\n");
+	//登陆服务器
+	char* serverIP = new char[16];
+	strcpy(serverIP, SERVER_IP);
+	int serverPort = SERVER_PORT;
+	char* userID = new char[10];
+	strcpy(userID, USER_NAME);
+	char* userPW = new char[10];
+	strcpy(userPW, USER_PASSWORD);
+	//CIDMP_ORDER_INFO info;
+	CIDMPTradeApi trader;
+	int nSuccess = trader.Connect(serverIP, serverPort, userID, userPW, 0);
+	if (nSuccess != 1){
+		printf("***Update Price Thread Login Failed!\n");
+		getchar();
+		return -1;
+	}
+	global_price_ready = true;
+	printf("***Update Price Thread Ready...\n");
+	CIDMP_TICK_QUOTATION_QUERY *query = new CIDMP_TICK_QUOTATION_QUERY[global_symbol.size()+1];
+	CIDMP_TICK_QUOTATION_INFO *info = new CIDMP_TICK_QUOTATION_INFO[global_symbol.size()+1];
+	for ( int i = 0; i < global_symbol.size(); i++ ){
+		(query+i)->exchgcode = EXCHANGE;
+		strcpy((query+i)->symbol, global_symbol[i].c_str());
+	}
 
-}*/
+	//循环
+	while(true){
+	//	printf("***Check Price...\n");
+		trader.GetTickQuotation(query, info, global_symbol.size());
+		for ( int i = 0; i < global_symbol.size(); i++ ){
+			//检查买价是否有变化
+			if ( global_symbol_price[global_symbol[i]].first != info[i].bp1 ){
+				printf("***%d\tBuy Price Changed, old price = %3.7f, new price = %3.7f\n", GetCurrentThreadId(), info[i].bp1, global_symbol_price[global_symbol[i]].first);
+				global_symbol_price[global_symbol[i]].first = info[i].bp1;
+				//global_event[global_symbol[i]].first.SetEvent();
+				EnterCriticalSection(&PriceChangeCriticalSection);
+				strcpy(price_change_symbol, global_symbol[i].c_str());
+				price_change_direction = 0;
+				LeaveCriticalSection(&PriceChangeCriticalSection);
+				printf("***%d\t发送价格变化信号\n", GetCurrentThreadId());
+				PriceChangeEvent.SetEvent();
+			}
+			//检查卖价是否有变化
+			if ( global_symbol_price[global_symbol[i]].second != info[i].sp1 ){
+				printf("***%d\tSell Price Changed, old price = %3.7f, new price = %3.7f\n", GetCurrentThreadId(), info[i].sp1, global_symbol_price[global_symbol[i]].second);
+				global_symbol_price[global_symbol[i]].second = info[i].sp1;
+				//global_event[global_symbol[i]].second.SetEvent();
+				EnterCriticalSection(&PriceChangeCriticalSection);
+				strcpy(price_change_symbol, global_symbol[i].c_str());
+				price_change_direction = 1;
+				LeaveCriticalSection(&PriceChangeCriticalSection);
+				printf("***%d\t发送价格变化信号\n", GetCurrentThreadId());
+				PriceChangeEvent.SetEvent();
+			}
+			
+		}
+		Sleep(UPDATE_WAIT_MILSECS);
+	}
+	
+
+	delete[] serverIP;
+	delete[] userID;
+	delete[] userPW;
+	printf("***Stop Update Price Thread...\n");
+	return 0;
+}
 /*
-int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio, double minGap )
+int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTime, double finalRatio, double minGap )
 {
 	CIDMP_TICK_QUOTATION_QUERY *initQuery = new CIDMP_TICK_QUOTATION_QUERY[1];
 
@@ -833,7 +1300,7 @@ int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds
 		}
 		if ( cur_time - start_time >= 1000 * maxSeconds * (1 - finalRatio) ){
 			//进入最终步骤
-			return GotoFinalStep( trader, orderReq, maxSeconds, nTicks, finalRatio, minGap );
+			return GotoFinalStep( trader, orderReq, maxSeconds, nTime, finalRatio, minGap );
 			break;
 		}else{
 			//获取最新价格
@@ -998,7 +1465,7 @@ inline bool GetRealTrade( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, CIDM
 
 }
 
-int GotoFinalStep( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTicks, double finalRatio, double minGap )
+int GotoFinalStep( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTime, double finalRatio, double minGap )
 {
 	clock_t start_time = clock();
 	int max_time = 1000 * maxSeconds * finalRatio;
@@ -1008,7 +1475,7 @@ int GotoFinalStep( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeco
 		for ( int i  = 0; i < N_TIME; i++ ){
 			//价格增加
 			//是否需要检查价格上限？ todo
-			orderReq.orderPrice += minGap * nTicks;
+			orderReq.orderPrice += minGap * nTime;
 			//下单
 			CIDMP_ORDER_INFO orderInfo;
 			GetRealTrade( trader, orderReq, orderInfo );
