@@ -1,0 +1,19 @@
+#include "TraderCommand.h"
+#include <boost/thread/thread.hpp>
+ #include <boost/date_time/posix_time/posix_time.hpp>
+ #include <boost/date_time/gregorian/gregorian.hpp>
+//#include <libs/thread/src/win32/thread.cpp>
+//#include <libs/thread/src/win32/tss_dll.cpp>
+//#include <libs/thread/src/win32/tss_pe.cpp>
+#include <boost/bind.hpp>
+#include <boost/thread/mutex.hpp>
+#include "IDMPTradeApi.h"
+#include <queue>
+#include "CMDQueueBuffer.h"
+#include <string>
+#include <vector>
+#include <list>
+#include <iostream>
+#include <hash_map>
+#include <fstream>
+#include "PriceBuffer.h"

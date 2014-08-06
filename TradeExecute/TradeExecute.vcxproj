@@ -37,7 +37,12 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <IncludePath>D:\boost_1_55_0\boost_1_55_0;D:\boost_1_55_0\boost_1_55_0\include\boost-1_55;$(IncludePath)</IncludePath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LibraryPath>D:\boost_1_55_0\boost_1_55_0\stage\lib;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -66,11 +71,15 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="TradeExecute.cpp" />
+    <ClCompile Include="MultiTrade.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CMDQueueBuffer.h" />
     <ClInclude Include="IDMPTradeApi.h" />
     <ClInclude Include="IDMPTradeDataType.h" />
+    <ClInclude Include="PriceBuffer.h" />
+    <ClInclude Include="stdafx.h" />
+    <ClInclude Include="TraderCommand.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

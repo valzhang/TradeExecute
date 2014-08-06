@@ -10,6 +10,7 @@
 #include <string>
 #include <list>
 #include <afxmt.h>
+#include <queue>
 
 const char SERVER_IP[16] = "196.168.0.163";
 const int SERVER_PORT = 8080;
@@ -44,8 +45,7 @@ const bool PROCED_DEBUG = false;
 const bool INSERT_DEBUG = true;
 const bool CANCEL_DEBUG = true;
 const int UPDATE_WAIT_MILSECS = 100;		//行情更新间隔毫秒数
-
-
+FILE *stream = NULL;
 //全局变量
 int global_trade_vol = 0;		//累计已交易量
 double global_trade_mount = 0;		//累计已交易金额
@@ -67,6 +67,7 @@ bool global_trade_ready;
 CEvent PriceChangeEvent(FALSE, FALSE, NULL, NULL);
 CEvent TradeCommandEvent(FALSE, FALSE, NULL, NULL);
 CEvent TradeReadyEvent(FALSE, FALSE, NULL, NULL);
+CEvent PrintLogEvent(FALSE, FALSE, NULL, NULL);
 char price_change_symbol[8];
 int price_change_direction;
 CRITICAL_SECTION PriceChangeCriticalSection;
@@ -96,11 +97,32 @@ typedef struct TraderThreadParameter{
 	int orderStatus;
 } TraderThreadParameter;
 
+enum CommandStatus{
+	INSERT_SEND,
+	INSERT_RETURN,
+	CANCEL_SEND,
+	CANCEL_RETURN,
+	UPDATE_ORDER
+};
+typedef struct LogMessage{
+	int server_no;
+	CommandStatus cmd_status;
+	int cmd_return;
+	int server_status;
+	int direction;
+	int offset;
+	int trade_vol;
+	int order_vol;
+	int cancel_vol;
+	double price;
+}LogMessage;
+queue<LogMessage> logMsgQueue;
 
 DWORD WINAPI TraderCore( void *para );
 DWORD WINAPI TraderThread( void *para );
 DWORD WINAPI UpdateOrderVol( void *para );
 DWORD WINAPI UpdatePrice( void *para );
+DWORD WINAPI LogPrint( void *para );
 //打印出委托请求信息
 inline void PrintOrderMsg( CIDMP_ORDER_REQ &orderReq );
 int OrderCancel( CIDMPTradeApi* pTrader, CIDMP_ORDER_REQ* pOrder, CIDMP_ORDER_INFO* pInfo, FILE *stream, int action_no );
@@ -306,6 +328,7 @@ int main()
 	global_trade_ready = false;
 	HANDLE priceHandler = CreateThread( NULL, 0, UpdatePrice, NULL, 0, NULL );
 	HANDLE volumeHandler = CreateThread( NULL, 0, UpdateOrderVol, NULL, 0, NULL );
+	HANDLE logPrintHandler = CreateThread( NULL, 0, LogPrint, NULL, 0, NULL );
 	printf("***等待其他进程准备就绪...\n");
 	while(!global_vol_ready || !global_price_ready){
 		Sleep(500);
@@ -391,7 +414,7 @@ int main()
 
 		HANDLE traderHandler = CreateThread( NULL, 0, TraderThread, &trader_para, 0, NULL );
 #endif
-
+	fclose(stream);
 	delete []ftinfo;
 	delete []info;
 #if 0 
@@ -513,7 +536,20 @@ DWORD WINAPI TraderThread( void *para )
 	printf("***%d\t开始交易...\n", GetCurrentThreadId());
 	//下单
 	int riskNum;
+
+	LogMessage oneMsg;
+	oneMsg.server_no = -1; oneMsg.cmd_status = INSERT_SEND; oneMsg.server_status = -1; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = 0; oneMsg.cancel_vol = 0; oneMsg.price = orderReq.orderPrice;
+	logMsgQueue.push(oneMsg);
+	//通知print进程打印
+	PrintLogEvent.SetEvent();
+	
 	nSuccess = trader.OrderInsert(orderReq, riskNum);
+
+	trader.GetOrderByOrderNo(orderReq.orderNo, info);
+	oneMsg.server_no = orderReq.orderNo; oneMsg.cmd_status = INSERT_RETURN; oneMsg.cmd_return = nSuccess, oneMsg.server_status = info.orderStatus; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = 0; oneMsg.cancel_vol = 0; oneMsg.price = orderReq.orderPrice;
+	logMsgQueue.push(oneMsg);
+	PrintLogEvent.SetEvent();
+
 	if (nSuccess < 0){
 		printf("***%d\t下单失败！\n", GetCurrentThreadId());
 		printf("***%s\n", trader.GetLastOrderInsertError());
@@ -525,6 +561,11 @@ DWORD WINAPI TraderThread( void *para )
 		Sleep(100);
 		trader.GetOrderByOrderNo(orderReq.orderNo, info);
 	}
+	
+	oneMsg.server_no = orderReq.orderNo; oneMsg.cmd_status = UPDATE_ORDER, oneMsg.server_status = info.orderStatus; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = info.tradeVol; oneMsg.cancel_vol = info.canceledVol; oneMsg.price = orderReq.orderPrice;
+	logMsgQueue.push(oneMsg);
+	PrintLogEvent.SetEvent();
+
 	if (info.orderStatus == 3){
 		printf("***%d\t下单失败！\n", GetCurrentThreadId());
 		printf("***%s\n", trader.GetLastOrderInsertError());
@@ -538,6 +579,7 @@ DWORD WINAPI TraderThread( void *para )
 //	CEvent& priceEvent = orderReq.direction == 0 ? global_event[orderReq.symbol].first : global_event[orderReq.symbol].second;
 	clock_t start_time = clock();
 	bool getTrade = false;
+	PriceChangeEvent.ResetEvent();
 	while (clock() - start_time <= maxSecs * 1000){
 		if (WaitForSingleObject(PriceChangeEvent, 3000) == WAIT_TIMEOUT ){
 			printf("Heart Beat...%d\n", clock());
@@ -566,21 +608,46 @@ DWORD WINAPI TraderThread( void *para )
 			
 			//撤单
 			char errorMsg[200];
-			trader.CancelOrder(orderReq.orderNo, errorMsg);
+			trader.GetOrderByOrderNo(orderReq.orderNo, info);
+			
+			oneMsg.server_no = orderReq.orderNo; oneMsg.cmd_status = CANCEL_SEND, oneMsg.server_status = info.orderStatus; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = info.tradeVol; oneMsg.cancel_vol = info.canceledVol; oneMsg.price = orderReq.orderPrice;
+			logMsgQueue.push(oneMsg);
+			PrintLogEvent.SetEvent();
+
+			nSuccess = trader.CancelOrder(orderReq.orderNo, errorMsg);
 			//确认撤单成功
 			trader.GetOrderByOrderNo(orderReq.orderNo, info);
+			oneMsg.server_no = orderReq.orderNo; oneMsg.cmd_status = CANCEL_RETURN, oneMsg.cmd_return = nSuccess, oneMsg.server_status = info.orderStatus; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = info.tradeVol; oneMsg.cancel_vol = info.canceledVol; oneMsg.price = orderReq.orderPrice;
+			logMsgQueue.push(oneMsg);
+			PrintLogEvent.SetEvent();
+
 			while (info.orderStatus < 8){
 				Sleep(100);
 				trader.GetOrderByOrderNo(orderReq.orderNo, info);
 			}
 			printf("***%d\t订单号 = %d, 撤单成功！\n", GetCurrentThreadId(), orderReq.orderNo);
+			
+			oneMsg.server_no = orderReq.orderNo; oneMsg.cmd_status = UPDATE_ORDER, oneMsg.server_status = info.orderStatus; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = info.tradeVol; oneMsg.cancel_vol = info.canceledVol; oneMsg.price = orderReq.orderPrice;
+			logMsgQueue.push(oneMsg);
+			PrintLogEvent.SetEvent();
+
 			//更新价格
 			orderReq.orderPrice = orderReq.direction == 0 ? global_symbol_price[orderReq.symbol].first : global_symbol_price[orderReq.symbol].second;
 			printf("***%d\t订单价格变化，最新价格 = %3.7f\n", GetCurrentThreadId(), orderReq.orderPrice);
 
 			//下单
 			int riskNum;
+		
+			oneMsg.server_no = -1; oneMsg.cmd_status = INSERT_SEND; oneMsg.server_status = -1; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = 0; oneMsg.cancel_vol = 0; oneMsg.price = orderReq.orderPrice;
+			logMsgQueue.push(oneMsg);
+			PrintLogEvent.SetEvent();
+
 			int nSuccess = trader.OrderInsert(orderReq, riskNum);
+			
+			oneMsg.server_no = orderReq.orderNo; oneMsg.cmd_status = INSERT_RETURN; oneMsg.cmd_return = nSuccess, oneMsg.server_status = info.orderStatus; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = 0; oneMsg.cancel_vol = 0; oneMsg.price = orderReq.orderPrice;
+			logMsgQueue.push(oneMsg);
+			PrintLogEvent.SetEvent();
+
 			if (nSuccess < 0){
 				printf("***%d\t下单失败！\n", GetCurrentThreadId());
 				printf("***%s\n", trader.GetLastOrderInsertError());
@@ -592,6 +659,11 @@ DWORD WINAPI TraderThread( void *para )
 				Sleep(100);
 				trader.GetOrderByOrderNo(orderReq.orderNo, info);
 			}
+
+			oneMsg.server_no = orderReq.orderNo; oneMsg.cmd_status = UPDATE_ORDER, oneMsg.server_status = info.orderStatus; oneMsg.direction = orderReq.direction; oneMsg.offset = orderReq.offsetFlagType; oneMsg.order_vol = orderReq.orderVol; oneMsg.trade_vol = info.tradeVol; oneMsg.cancel_vol = info.canceledVol; oneMsg.price = orderReq.orderPrice;
+			logMsgQueue.push(oneMsg);
+			PrintLogEvent.SetEvent();
+
 			if (info.orderStatus == 3){
 				printf("***%d\t下单失败！\n", GetCurrentThreadId());
 				printf("***%s\n", trader.GetLastOrderInsertError());
@@ -1239,7 +1311,7 @@ DWORD WINAPI UpdatePrice( void *para )
 
 	//循环
 	while(true){
-	//	printf("***Check Price...\n");
+		//printf("***Check Price...\n");
 		trader.GetTickQuotation(query, info, global_symbol.size());
 		for ( int i = 0; i < global_symbol.size(); i++ ){
 			//检查买价是否有变化
@@ -1277,6 +1349,62 @@ DWORD WINAPI UpdatePrice( void *para )
 	delete[] userPW;
 	printf("***Stop Update Price Thread...\n");
 	return 0;
+}
+
+DWORD WINAPI LogPrint( void *para )
+{
+	//读取本地交易编号action_no
+	FILE *action_stream;
+	action_stream = fopen( ACTION_PATH.c_str(), "r" );
+	int no = 0;
+	int action_no;
+	while (fscanf( action_stream, "%d", &no ) != EOF){
+		action_no = no;
+	}
+	if (action_stream == NULL){
+		printf("***[Log Print Thread]%d\t本地交易编号记录文件读取失败！\n");
+		getchar();
+		return -1;
+	}
+	action_no++;
+	fclose(action_stream);
+	action_stream = fopen( ACTION_PATH.c_str(), "a");
+
+	//打开log文件流
+
+	stream = fopen( LOG_PATH.c_str(), "w" );
+	if (stream == NULL){
+		printf("***[Log Print Thread]%d\tLog记录文件打开失败！\n");
+		getchar();
+		return -1;
+	}
+	time_t rawtime;
+	while (true){
+		WaitForSingleObject(PrintLogEvent, INFINITE);
+		PrintLogEvent.ResetEvent();
+		if (logMsgQueue.empty()){
+			printf("***[Log Print Thread]%d\tError!队列中无待打印log信息!\n");
+			continue;
+		}
+		while(!logMsgQueue.empty()){
+			LogMessage& oneMsg = logMsgQueue.front();
+			//输出最前一条Log信息
+			printf("print 编号 = %d 的log信息\n", action_no);
+
+			time(&rawtime);
+			if (oneMsg.cmd_status == CANCEL_RETURN || oneMsg.cmd_status == INSERT_RETURN){
+				fprintf(stream, "时间 = %s本地编号 = %d,\t服务器编号 = %d,\t指令状态 = %d,\t指令返回 = %d,\t服务器状态 = %d,\t买卖方向 = %d,\t开平方向 = %d,\t订单总量 = %d,\t已成交数量 = %d,\t已撤单数量 = %d,\t价格 = %7.3f\n", 
+					asctime(localtime(&rawtime)), action_no, oneMsg.server_no, oneMsg.cmd_status, oneMsg.cmd_return, oneMsg.server_status, oneMsg.direction, oneMsg.offset, oneMsg.order_vol, oneMsg.trade_vol, oneMsg.cancel_vol, oneMsg.price);
+			}else{
+				fprintf(stream, "时间 = %s本地编号 = %d,\t服务器编号 = %d,\t指令状态 = %d,\t服务器状态 = %d,\t买卖方向 = %d,\t开平方向 = %d,\t订单总量 = %d,\t已成交数量 = %d,\t已撤单数量 = %d,\t价格 = %7.3f\n", 
+					asctime(localtime(&rawtime)), action_no, oneMsg.server_no, oneMsg.cmd_status, oneMsg.server_status, oneMsg.direction, oneMsg.offset, oneMsg.order_vol, oneMsg.trade_vol, oneMsg.cancel_vol, oneMsg.price);
+			}
+			action_no++;
+			fprintf(action_stream, "%d\n", action_no);
+			logMsgQueue.pop();
+		}
+
+	}
 }
 /*
 int TraderCore( CIDMPTradeApi &trader, CIDMP_ORDER_REQ &orderReq, int maxSeconds, int nTime, double finalRatio, double minGap )

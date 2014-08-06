@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="TradeExecute.cpp">
+    <ClCompile Include="MultiTrade.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
@@ -24,6 +24,18 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="IDMPTradeApi.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="CMDQueueBuffer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="stdafx.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="TraderCommand.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="PriceBuffer.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
