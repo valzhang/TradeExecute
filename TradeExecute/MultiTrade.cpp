@@ -57,7 +57,7 @@ void ManageThread();
 //int ReadSymbal();
 void UpdatePriceThread();
 void UpdateOrderNoThread();
-void GoToFinalStep();
+bool GoToFinalStep(CIDMPTradeApi &trader, CIDMP_ORDER_REQ &order_req, int max_secs, double gap, int try_times, int id_no);
 
 int main()
 {
@@ -376,7 +376,7 @@ void TradeThread(int id_no)
 	bool get_trade = false;
 	//开始交易循环
 	boost::posix_time::ptime begin_time = boost::posix_time::microsec_clock::local_time();
-	while ((boost::posix_time::microsec_clock::local_time() - begin_time).total_milliseconds() <= MAX_SECONDS*1000){
+	while ((boost::posix_time::microsec_clock::local_time() - begin_time).total_milliseconds() <= MAX_SECONDS*(1-FINAL_RATIO)*1000){
 		double new_price = price_buffer.WaitPriceChange(order_req.symbol, order_req.direction);
 		printf("***获取最新价格成功%7.3f\n", new_price);
 		if (global_order_vol[order_req.orderNo] == 0){
@@ -393,6 +393,7 @@ void TradeThread(int id_no)
 
 		while (order_info.orderStatus < 6){
 			boost::this_thread::sleep(boost::posix_time::millisec(100));
+			printf("***撤单中...\n");
 			trader.GetOrderByOrderNo(order_req.orderNo, order_info);
 		}
 		printf("[Trader Thread %d]***撤单成功！\n", id_no);
@@ -427,7 +428,51 @@ void TradeThread(int id_no)
 	}
 
 	if (!get_trade){
-		printf("[Trader Thread %d]***订单超时\n", id_no);
+		//如果有单，撤单
+		trader.GetOrderByOrderNo(order_req.orderNo, order_info);
+		if (order_info.orderVol > order_info.tradeVol + order_info.canceledVol){
+			printf("***撤单\n");
+			char errorMsg[200];
+			trader.GetOrderByOrderNo(order_req.orderNo, order_info);
+			nSuccess = trader.CancelOrder(order_req.orderNo, errorMsg);
+			trader.GetOrderByOrderNo(order_req.orderNo, order_info);
+
+			while (order_info.orderStatus < 6){
+				boost::this_thread::sleep(boost::posix_time::millisec(100));
+				trader.GetOrderByOrderNo(order_req.orderNo, order_info);
+			}
+			printf("[Trader Thread %d]***撤单成功！\n", id_no);
+		}
+		//计算minGap
+		double minGap;
+		if (order_req.exchgcode < 3){
+			CIDMP_STOCK_INFO *info = new CIDMP_STOCK_INFO[6000];
+			int stkinfo2 = trader.GetSysStockInfo(false,info,6000);
+			for (int i = 0; i < stkinfo2; i++){
+				if ( strcmp( info[i].symbol, order_req.symbol ) == 0 ){
+					minGap = info[i].priceUnit;
+					delete []info;
+					break;
+				}
+			}
+		}else{
+			CIDMP_FUTRUE_INFO *ftinfo = new CIDMP_FUTRUE_INFO[3000];
+			int ftinfoSize = trader.GetSysFutrueInfo(false,ftinfo,3000);
+			for (int i = 0; i < ftinfoSize; i++){
+				if ( strcmp( ftinfo[i].symbol, order_req.symbol ) == 0 ){
+					minGap = ftinfo[i].priceUnit;
+					delete []ftinfo;
+					break;
+				}
+			}
+		}
+		if (order_req.direction == 1){
+			minGap = 0 - minGap;
+		}
+		get_trade = GoToFinalStep(trader, order_req, MAX_SECONDS * FINAL_RATIO, minGap, N_TIME, id_no);
+		if (!get_trade){
+			printf("[Trader Thread %d]***订单超时\n", id_no);
+		}
 	}
 
 
@@ -567,7 +612,54 @@ void UpdateOrderNoThread()
 	printf("[Update Order No Thread]***线程结束\n");
 }
 
-void GoToFinalStep()
+bool GoToFinalStep(CIDMPTradeApi &trader, CIDMP_ORDER_REQ &order_req, int max_secs, double gap, int try_times, int id_no)
 {
+	CIDMP_ORDER_INFO order_info;
+	bool get_trade =false;
+	order_req.orderPrice = price_buffer.GetLastPrice(order_req.symbol, order_req.direction);
+	boost::posix_time::ptime begin_time = boost::posix_time::microsec_clock::local_time();
+	while ( (boost::posix_time::microsec_clock::local_time() - begin_time).total_milliseconds() <= max_secs * 1000 && !get_trade ){
+		//设置订单价格
+		order_req.orderPrice += gap;
+		for ( int i = 0; i < try_times; i++ ){
+			//下单
+			int risk_num;
+			int nSuccess = trader.OrderInsert(order_req, risk_num);
 
+			if (nSuccess < 0){
+				printf("[Trader Thread %d]***下单失败！\n", id_no);
+				printf("[Trader Thread %d]***%s\n", trader.GetLastOrderInsertError());
+				return false;
+			}
+			//确认下单成功
+			trader.GetOrderByOrderNo(order_req.orderNo, order_info);
+			while (order_info.orderStatus < 3){
+				boost::this_thread::sleep(boost::posix_time::millisec(100));
+				trader.GetOrderByOrderNo(order_req.orderNo, order_info);
+			}
+			if (order_info.orderStatus == 3){
+				printf("[Trader Thread %d]***下单失败！\n", id_no);
+				printf("[Trader Thread %d]***%s\n", trader.GetLastOrderInsertError());
+				return false;
+			}
+			printf("[Trader Thread %d]***下单成功！下单价格 = %7.3f\n", id_no, order_req.orderPrice);
+			//撤单
+			printf("***撤单\n");
+			char errorMsg[200];
+			nSuccess = trader.CancelOrder(order_req.orderNo, errorMsg);
+
+			while (order_info.orderStatus < 6){
+				printf("***撤单中...\n");
+				boost::this_thread::sleep(boost::posix_time::millisec(100));
+				trader.GetOrderByOrderNo(order_req.orderNo, order_info);
+			}
+			printf("[Trader Thread %d]***撤单成功！\n", id_no);
+
+			//检查是否交易成功
+			if (order_info.orderVol == order_info.tradeVol){
+				return true;
+			}
+		}
+	}
+	return false;
 }
