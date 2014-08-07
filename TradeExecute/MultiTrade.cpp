@@ -23,7 +23,7 @@ const int ORDER_SIZE = 300;
 const int N_TIME = 3;
 const int MAX_SECONDS = 600;
 const int N_TICKS = 1;
-const double FINAL_RATIO = 0.05;
+const double FINAL_RATIO = 0.99;
 const int MAX_INSERT_SECS = 5;	//下单最长等待时间
 const string LOG_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\log.txt";
 const string TRANS_LOG_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\transaction_log.txt";
@@ -591,7 +591,7 @@ void UpdateOrderNoThread()
 			boost::this_thread::sleep(boost::posix_time::seconds(1));
 			continue;
 		}
-		printf("[Update Order No Thread]***更新订单信息\n");
+	//	printf("[Update Order No Thread]***更新订单信息\n");
 		for ( list<int>::iterator it = global_order_no.begin(); it != global_order_no.end(); ){
 			int order_no = *it;
 			trader.GetOrderByOrderNo( order_no, info );
@@ -657,6 +657,7 @@ bool GoToFinalStep(CIDMPTradeApi &trader, CIDMP_ORDER_REQ &order_req, int max_se
 
 			//检查是否交易成功
 			if (order_info.orderVol == order_info.tradeVol){
+				printf("[Trader Thread %d]***交易成功！成交价格 = %7.3f\n", id_no, order_req.orderPrice);
 				return true;
 			}
 		}
