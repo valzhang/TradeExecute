@@ -38,10 +38,11 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <IncludePath>D:\boost_1_55_0\boost_1_55_0;D:\boost_1_55_0\boost_1_55_0\include\boost-1_55;$(IncludePath)</IncludePath>
+    <IncludePath>E:\nffund\交易接口\行情\tdfapi_windows\c\include;D:\boost_1_55_0\boost_1_55_0;D:\boost_1_55_0\boost_1_55_0\include\boost-1_55;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <LibraryPath>D:\boost_1_55_0\boost_1_55_0\stage\lib;$(LibraryPath)</LibraryPath>
+    <LibraryPath>E:\nffund\交易接口\行情\tdfapi_windows\c\lib\Win32Debug\;D:\boost_1_55_0\boost_1_55_0\stage\lib;$(LibraryPath)</LibraryPath>
+    <ReferencePath>E:\nffund\交易接口\行情\tdfapi_windows\c\lib\Win32Debug\;$(ReferencePath)</ReferencePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -53,7 +54,7 @@
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>IDMPTradeAPI.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>TDFAPI25.lib;IDMPTradeAPI.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>IDMPTradeAPI.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
   </ItemDefinitionGroup>
@@ -77,6 +78,7 @@
     <ClInclude Include="CMDQueueBuffer.h" />
     <ClInclude Include="IDMPTradeApi.h" />
     <ClInclude Include="IDMPTradeDataType.h" />
+    <ClInclude Include="LogMsgBuffer.h" />
     <ClInclude Include="PriceBuffer.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="TraderCommand.h" />

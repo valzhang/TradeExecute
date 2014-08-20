@@ -17,3 +17,37 @@
 #include <hash_map>
 #include <fstream>
 #include "PriceBuffer.h"
+#include "LogMsgBuffer.h"
+#include "TDFAPI.h"
+#include <boost/assert.hpp>
+#define SAFE_CHAR(ch) ((ch) ? (ch) : ' ')
+#define ELEM_COUNT(arr) (sizeof(arr)/sizeof(arr[0]))
+
+#ifndef MY_LOG_MSG
+#define MY_LOG_MSG
+typedef struct MyLogMsg{
+	boost::posix_time::ptime log_time;
+	int server_no;
+	char cmd_status[16];
+	int cmd_rtn;
+	int server_status;
+	int direction;
+	int offset_flag;
+	int order_vol;
+	int trade_vol;
+	int cancel_vol;
+	double price;
+} MyLogMsg;
+#endif
+
+#ifndef TRANS_LOG_MSG
+#define TRANS_LOG_MSG
+typedef struct TransLogMsg{
+	boost::posix_time::ptime trans_time;
+	//int local_no;
+	int order_vol;
+	int trade_vol;
+	double trade_price;
+	double mean_price;
+} TransLogMsg;
+#endif

@@ -47,7 +47,7 @@ public:
 					direct_change = direction;
 					tag_mu.unlock();
 				}
-				printf("%s 买价变化，原价 = %7.3f，新价 = %7.3f\n", symbol.c_str(), all_symbol_price[symbol].first, price);
+	//			printf("%s 买价变化，原价 = %7.3f，新价 = %7.3f\n", symbol.c_str(), all_symbol_price[symbol].first, price);
 				all_symbol_price[symbol].first = price;				
 				cond_price_change.notify_one();
 				
@@ -60,7 +60,7 @@ public:
 					direct_change = direction;
 					tag_mu.unlock();
 				}				
-				printf("%s 卖价变化，原价 = %7.3f，新价 = %7.3f\n", symbol.c_str(), all_symbol_price[symbol].second, price);
+		//		printf("%s 卖价变化，原价 = %7.3f，新价 = %7.3f\n", symbol.c_str(), all_symbol_price[symbol].second, price);
 				all_symbol_price[symbol].second = price;
 				cond_price_change.notify_one();
 			}
@@ -84,6 +84,7 @@ public:
 				}
 			}else{//超时
 				printf("***心跳信息...\n");
+				return 0;
 			}
 
 		}
