@@ -14,7 +14,7 @@ const int DIRECTION = 0;	//交易方向
 const int EXCHANGE = 6;	//交易所编号
 const int OFFSET = 1;		//开平方向
 const int PJ = 0;			//是否平今
-const char SYMBOL[8] = "IF1409";	//股票或期货代码
+//const char SYMBOL[8] = "IF1409";	//股票或期货代码
 const int INI_PRICE = 0;
 const int INI_VOL = 4;
 const int FUND_SIZE = 100;
@@ -24,7 +24,7 @@ const int N_TIME = 3;
 const int MAX_SECONDS = 600;
 const int N_TICKS = 1;
 const double FINAL_RATIO = 0.05;
-const int MAX_INSERT_SECS = 5;	//下单最长等待时间
+//const int MAX_INSERT_SECS = 5;	//下单最长等待时间
 const string LOG_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\log.txt";
 const string TRANS_LOG_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\transaction_log.txt";
 const string ACTION_PATH = "C:\\Users\\Val\\Documents\\GitHub\\TradeExecute\\action_log.txt";
@@ -262,20 +262,46 @@ void ReceiveCommandThread()
 	while(true){
 		printf("[Receive Command Thread]***是否继续交易？(Y/y继续，其他终止程序)\n");
 		char flag;
-		scanf("%c", &flag);
+		//scanf("%c", &flag);
+		cin >> flag;
 		if ( flag != 'y' && flag != 'Y' ){
 			global_program_termination = true;
 			global_create_thread_condition.notify_all();
 	//		printf("[Receive Command Thread]***线程结束\n");
 			break;
 		}
-		printf("[Receive Command Thread]***请输出交易指令：(交易所代码 代码 买卖方向 开平方向 交易数量 是否平今 交易时间/secs)\n");
+		printf("[Receive Command Thread]***请输出交易指令：\n");
 		//debug
 		getchar();
+		int exchange, direction, offset, vol, pj, secs;
+		char symbol[8];
+//		scanf("%d%s%d%d%d%d%d", &exchange, &symbol, &direction, &offset, &vol, &pj, &secs);
+		try
+		{
+			cout << "代码 = ";
+			cin >> symbol;
+			cout << "买卖方向(0 买; 1 卖) = ";
+			cin >> direction;
+			cout << "开平方向(0 开; 1 平) = ";
+			cin >> offset;
+			cout << "交易数量(手) = ";
+			cin >> vol;
+			cout << "是否平今(0 否; 1 是) = ";
+			cin >> pj;
+			cout << "交易时间(secs) = ";
+			cin >> secs;
+		}
+		
+		catch (CException* e)
+		{
+			cout << e->ReportError();
+			continue;
+		}
 		TraderCommand cmd;
 		cmd.fund_id = FUND_ID; cmd.cell_id = CELL_ID; cmd.profl_id = PROFL_ID;
-		cmd.exchange_code = 6; strcpy(cmd.symbol, "IF1409"); cmd.direction = 0; cmd.offset_flag_type = 0; cmd.order_volumn = 1+count; cmd.pj = 0; cmd.max_seconds = 600;
-		++count;
+		//cmd.exchange_code = 6; strcpy(cmd.symbol, "IF1409"); cmd.direction = 0; cmd.offset_flag_type = 0; cmd.order_volumn = 1+count; cmd.pj = 0; cmd.max_seconds = 600;
+		cmd.exchange_code = 6; strcpy(cmd.symbol, symbol); cmd.direction = direction; cmd.offset_flag_type = offset; cmd.order_volumn = vol; cmd.pj = pj; cmd.max_seconds = secs;
+	//	++count;
 //		global_cmd_queue.push(cmd);
 		cmd_buffer.PutCommand(cmd);
 	}
@@ -606,7 +632,13 @@ void TDFUpdatePriceThread()
 	pSettings.pfnSysMsgNotify = RecvSys;
 	pSettings.pfnMsgHandler = RecvData;
 	pSettings.szMarkets = "CF";
-	pSettings.szSubScriptions = "IF1409.CF";
+	string symbols;
+	for ( int i = 0; i < price_buffer.all_symbol.size(); i++ ){
+		symbols.append(price_buffer.all_symbol[i]);
+		symbols.append(".CF;");
+	}
+
+	pSettings.szSubScriptions = symbols.c_str();
 	
 	TDF_ERR errorMsg;
 

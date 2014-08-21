@@ -16,6 +16,8 @@
 #include <iostream>
 #include <hash_map>
 #include <fstream>
+#include <stdexcept>
+#include <afx.h>
 #include "PriceBuffer.h"
 #include "LogMsgBuffer.h"
 #include "TDFAPI.h"

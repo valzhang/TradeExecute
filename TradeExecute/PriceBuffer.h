@@ -62,7 +62,7 @@ public:
 				}				
 		//		printf("%s 卖价变化，原价 = %7.3f，新价 = %7.3f\n", symbol.c_str(), all_symbol_price[symbol].second, price);
 				all_symbol_price[symbol].second = price;
-				cond_price_change.notify_one();
+				cond_price_change.notify_all();
 			}
 		}
 	}

@@ -42,7 +42,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LibraryPath>E:\nffund\交易接口\行情\tdfapi_windows\c\lib\Win32Debug\;D:\boost_1_55_0\boost_1_55_0\stage\lib;$(LibraryPath)</LibraryPath>
-    <ReferencePath>E:\nffund\交易接口\行情\tdfapi_windows\c\lib\Win32Debug\;$(ReferencePath)</ReferencePath>
+    <ReferencePath>$(ReferencePath)</ReferencePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
